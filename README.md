@@ -144,16 +144,21 @@ Every error has the same body:
 
 ## Assumptions
 
+The brief lists three objectives: minimize total cost, maximize transporter usage up to the given limit, and cover
+every lane. It does not say which wins when the first two conflict. **The priority below is our documented
+interpretation of that list, not something the brief states.**
+
 1. Every lane must be covered.
 2. A lane may only be assigned to a transporter that quoted it.
-3. Primary objective: the minimum total cost over all choices of at most k transporters.
-4. Tie-break among equal-cost answers: prefer the answer that actually uses more transporters (up to k), then the
-   lexicographically smallest transporter ids. The output is deterministic.
-5. Inside the chosen set, each lane goes to its cheapest quoting transporter; equal quotes go to the lowest
-   transporter id.
+3. **Cost first:** the minimum total cost over all choices of at most k transporters.
+4. **Then usage:** among all minimum-cost assignments, use as many transporters as possible, up to k. A
+   transporter is never added if it would raise the cost.
+5. **Then ids:** remaining ties are broken deterministically in favour of lower transporter ids, so equal inputs
+   always give equal outputs.
 
-Why spell these out: "minimize cost" and "use up to k transporters" can pull in different directions, so the
-priority between them is made explicit.
+In practice, each lane pays the cheapest quote within the chosen set. When several transporters tie for a lane's
+cheapest quote, lanes are spread across them by a maximum matching (see [Solver](#solver)), so equal quotes never
+pile onto one transporter while another could take a lane at the same price.
 
 ## Solver
 
@@ -165,15 +170,26 @@ The solver is a **Strategy** (`AssignmentSolver`) with two implementations; `Sol
 2. Enumerate every set of exactly `min(k, N)` transporters in lexicographic order (iterative combination
    generation, no recursion or streams in the hot loop).
 3. For each set, cost = sum over lanes of the cheapest quote in the set; skip sets that leave a lane uncovered.
-4. Keep the best by lowest cost, then more transporters actually used, then the first set found.
+4. Keep the best by lowest cost, then higher **matched usage**, then the first set found.
+5. Build the assignment for the best set with the shared `Assigner` (below).
 
-Sets of exactly `min(k, N)` are enough to reach the minimum cost, because adding a transporter never raises the
-cost. One consequence for the tie-break: candidates are sets of that size, and "used" is counted after the
-lowest-id rule for equal lane quotes. When different transporters quote exactly the same price for a lane, a
-smaller set could use more distinct transporters at the same cost; this service returns the candidate set's
-assignment. Costs are unaffected. A unit test (`candidateSetsHaveSizeMinKN`) pins this behaviour.
+**Matched assignment (`Assigner`, shared by both solvers).** For the chosen set, each lane's "cheapest edges" are
+the transporters offering its cheapest in-set quote. A maximum bipartite matching between lanes and their cheapest
+edges (Kuhn's augmenting paths; lanes in ascending id, candidates in ascending transporter id, so the result is
+deterministic) gives matched lanes to their matched transporter. Unmatched lanes go to their cheapest transporter
+with the lowest id. Every lane still pays its cheapest in-set quote, so the cost does not change. The matching size
+is exactly the largest usage any minimum-cost assignment of that set can reach: at minimum cost, each used
+transporter must be cheapest for at least one lane of its own.
 
-Complexity: **O(C(N, k) × lanes × k)** time, O(N × lanes) memory. For 7 transporters and k = 3 that is 35 sets.
+**Why sets of exactly `min(k, N)` are enough.** For cost: adding a transporter never raises it, because each lane
+keeps its cheapest quote. For usage: any minimum-cost assignment that uses a set U still fits, at the same cost,
+inside every larger set that contains U, so that set's matched usage is at least |U|. A randomized test compares
+both cost and usage with a brute force over every possible assignment.
+
+**Complexity.** The cost scan is **O(C(N, k) × lanes × k)** time and O(N × lanes) memory; for 7 transporters and
+k = 3 that is 35 sets. The matching (O(lanes² × k)) runs only for a set whose cost ties the best so far, and not at
+all once the best set already uses `min(k, lanes)` transporters. Inputs with many exactly equal quotes therefore
+cost more than the scan alone; inputs without ties cost nothing extra.
 
 ### Greedy fallback: `GreedySolver`
 
@@ -200,7 +216,7 @@ solver/       AssignmentSolver            Strategy interface
               ExactSubsetSolver           exhaustive search
               GreedySolver                fallback heuristic
               SolverSelector              picks the strategy from the search-space size (simple factory)
-              Assigner                    one place for the final "cheapest quote, lowest id" rule
+              Assigner                    one place for the final rule: cheapest quote, matched for usage
               QuoteMatrix, Combinatorics  dense quote table; saturating C(n, k)
 repository/   DatasetRepository           Repository interface
               InMemoryDatasetRepository   AtomicReference holding the latest immutable Dataset
@@ -221,12 +237,14 @@ config/       OpenAPI info, Swagger examples
 
 ## Tests
 
-`mvn test` runs 56 tests:
+`mvn test` runs 61 tests:
 
 - `ExactSubsetSolverTest`: Test Case 1 (k = 1, 2, 3, 7, k > N), the sample's set {3, 4, 6} and its listed
-  assignment (69,001), Test Case 2 (k = 2, 3, 4), tie-breaks.
+  assignment (69,001), Test Case 2 (k = 2, 3, 4), tie-breaks, and the matched assignment (equal quotes use both
+  transporters, cost still beats usage, usage is bounded by the lane count, matching beats a naive per-lane rule).
 - `GreedySolverTest`: covers every lane, respects k, returns empty when infeasible.
-- `SolverPropertyTest`: 500 seeded random datasets; exact = brute force, and exact ≤ greedy.
+- `SolverPropertyTest`: seeded random datasets; exact cost = brute-force minimum, exact ≤ greedy, and exact usage =
+  the brute-force maximum usage among minimum-cost assignments (brute force over every possible assignment).
 - `CombinatoricsTest`: C(7,3) = 35, C(5,5) = 1, the largest exact value, saturation.
 - `TransporterApiTest`: every row of the error table, both test cases over HTTP, clamping, replacement of input,
   OpenAPI docs. The tests post the files in `samples/`, so the published samples are tested too.

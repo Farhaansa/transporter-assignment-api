@@ -7,19 +7,28 @@ import org.springframework.stereotype.Component;
 import java.util.Optional;
 
 /**
- * Exhaustive search over every set of exactly {@code min(k, N)} transporters.
+ * Exhaustive search over every set of exactly {@code min(k, N)} transporters. Returns a proven minimum-cost
+ * assignment.
  *
- * <p>Sets of that size are enough for the minimum cost: adding a transporter never raises the cost,
- * because each lane keeps its cheapest quote. Within a set each lane goes to its cheapest quote (lowest id on
- * ties). Among sets of equal cost the one whose assignment uses more transporters wins, and after that the
- * first set found in lexicographic order of transporter ids.
+ * <p>Priority (our documented reading of the brief): lowest total cost first; among minimum-cost answers, the
+ * most transporters used (up to k); remaining ties broken deterministically by lower transporter ids.
  *
- * <p>Time is O(C(N, k) * lanes * k); memory is O(N * lanes).
+ * <p>Sets of exactly {@code min(k, N)} are enough. For cost: adding a transporter never raises it, because each lane
+ * keeps its cheapest quote. For usage: any minimum-cost assignment that uses a set U also fits inside every larger
+ * set containing U at the same cost, so the matched usage of that larger set is at least |U|. A set's usage is the
+ * maximum matching computed by {@link Assigner}. Among sets of equal cost the higher usage wins, then the first set
+ * found in lexicographic order of transporter ids.
+ *
+ * <p>Time is O(C(N, k) * lanes * k) for the cost scan. The matching runs only for sets whose cost ties the best so
+ * far, and stops being needed once the best already uses {@code min(k, lanes)} transporters; with many exact
+ * ties it adds O(lanes * lanes * k) per tied set. Memory is O(N * lanes).
  */
 @Component
 public class ExactSubsetSolver implements AssignmentSolver {
 
     public static final String METHOD = "EXACT";
+
+    private static final int UNKNOWN = -1;
 
     @Override
     public Optional<Solution> solve(Dataset data, int k) {
@@ -29,19 +38,16 @@ public class ExactSubsetSolver implements AssignmentSolver {
         int lanes = matrix.laneCount();
         int size = Math.min(k, n);
 
+        // No assignment can use more transporters than the set has, or more than there are lanes.
+        int usageCap = Math.min(size, lanes);
+
         int[] combo = firstCombination(size);
         int[] best = null;
         long bestCost = Long.MAX_VALUE;
-        int bestUsed = -1;
-
-        // Marks transporters that win a lane in the current set; a fresh stamp per set avoids clearing the array.
-        int[] winnerStamp = new int[n];
-        int stamp = 0;
+        int bestUsage = UNKNOWN;
 
         while (true) {
-            stamp++;
             long cost = 0;
-            int used = 0;
             boolean covered = true;
             for (int l = 0; l < lanes; l++) {
                 int winner = Assigner.cheapest(matrix, combo, l);
@@ -50,15 +56,24 @@ public class ExactSubsetSolver implements AssignmentSolver {
                     break;
                 }
                 cost += matrix.quote[winner][l];
-                if (winnerStamp[winner] != stamp) {
-                    winnerStamp[winner] = stamp;
-                    used++;
-                }
             }
-            if (covered && (cost < bestCost || (cost == bestCost && used > bestUsed))) {
-                bestCost = cost;
-                bestUsed = used;
-                best = combo.clone();
+            if (covered) {
+                if (cost < bestCost) {
+                    bestCost = cost;
+                    bestUsage = UNKNOWN; // computed only if another set ties this cost
+                    best = combo.clone();
+                } else if (cost == bestCost) {
+                    if (bestUsage == UNKNOWN) {
+                        bestUsage = Assigner.maximumUsage(matrix, best);
+                    }
+                    if (bestUsage < usageCap) {
+                        int usage = Assigner.maximumUsage(matrix, combo);
+                        if (usage > bestUsage) {
+                            bestUsage = usage;
+                            best = combo.clone();
+                        }
+                    }
+                }
             }
             if (!nextCombination(combo, n)) {
                 break;

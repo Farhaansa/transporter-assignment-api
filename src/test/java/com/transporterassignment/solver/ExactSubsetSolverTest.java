@@ -110,7 +110,8 @@ class ExactSubsetSolverTest {
     @Test
     @DisplayName("Equal cost: the answer that uses more transporters wins")
     void tieBreakPrefersMoreTransportersUsed() {
-        // T1 alone covers both lanes for 20; T2 + T3 also cost 20 and use two transporters.
+        // T1 alone covers both lanes for 20. {T1, T2} and {T2, T3} also cost 20 using two transporters;
+        // {T1, T2} is the first such set in id order (lane 1 -> T2, lane 2 -> T1).
         Dataset data = TestData.of(2,
                 transporter(1, Map.of(1L, 10L, 2L, 10L)),
                 transporter(2, Map.of(1L, 10L)),
@@ -119,7 +120,7 @@ class ExactSubsetSolverTest {
         Solution solution = solver.solve(data, 2).orElseThrow();
 
         assertThat(solution.totalCost()).isEqualTo(20);
-        assertThat(solution.selected()).containsExactly(2L, 3L);
+        assertThat(solution.selected()).containsExactly(1L, 2L);
     }
 
     @Test
@@ -138,7 +139,7 @@ class ExactSubsetSolverTest {
     }
 
     @Test
-    @DisplayName("Equal lane quotes inside the chosen set go to the lowest transporter id")
+    @DisplayName("A tie that cannot raise usage (one lane) goes to the lowest transporter id")
     void laneTieGoesToLowestId() {
         Dataset data = TestData.of(1,
                 transporter(9, Map.of(1L, 7L)),
@@ -151,9 +152,67 @@ class ExactSubsetSolverTest {
     }
 
     @Test
-    @DisplayName("Candidate sets have exactly min(k, N) members; equal lane quotes go to the lowest id")
-    void candidateSetsHaveSizeMinKN() {
-        // T1 quotes 1 everywhere. T2 + T3 also reach the minimum cost 4 without T1.
+    @DisplayName("Equal quotes everywhere: both transporters are used at the same cost")
+    void equalQuotesUseBothTransporters() {
+        Dataset data = TestData.of(2,
+                transporter(1, Map.of(1L, 10L, 2L, 10L)),
+                transporter(2, Map.of(1L, 10L, 2L, 10L)));
+
+        Solution solution = solver.solve(data, 2).orElseThrow();
+
+        assertThat(solution.totalCost()).isEqualTo(20);
+        assertThat(solution.selected()).containsExactly(1L, 2L);
+        assertThat(Set.copyOf(solution.laneToTransporter().values())).containsExactlyInAnyOrder(1L, 2L);
+    }
+
+    @Test
+    @DisplayName("Cost comes first: a second transporter is not used if it costs more")
+    void costStillWinsOverUsage() {
+        // T1 covers both lanes for 20; any assignment using T2 as well costs 21.
+        Dataset data = TestData.of(2,
+                transporter(1, Map.of(1L, 10L, 2L, 10L)),
+                transporter(2, Map.of(1L, 11L, 2L, 11L)));
+
+        Solution solution = solver.solve(data, 2).orElseThrow();
+
+        assertThat(solution.totalCost()).isEqualTo(20);
+        assertThat(solution.selected()).containsExactly(1L);
+    }
+
+    @Test
+    @DisplayName("Usage cannot exceed the number of lanes: 1 lane, k=3 uses one transporter")
+    void usageBoundedByLanes() {
+        Dataset data = TestData.of(1,
+                transporter(1, Map.of(1L, 8L)),
+                transporter(2, Map.of(1L, 5L)),
+                transporter(3, Map.of(1L, 5L)));
+
+        Solution solution = solver.solve(data, 3).orElseThrow();
+
+        assertThat(solution.totalCost()).isEqualTo(5);
+        assertThat(solution.selected()).containsExactly(2L);
+    }
+
+    @Test
+    @DisplayName("Matching beats a per-lane 'first unused, lowest id' rule")
+    void matchingBeatsNaiveOrder() {
+        // Lane 1 is cheapest from T1 or T2; lane 2 only from T1. A naive pass gives lane 1 to T1 and then
+        // lane 2 has nowhere else to go, leaving T2 unused. The matching re-routes lane 1 to T2.
+        Dataset data = TestData.of(2,
+                transporter(1, Map.of(1L, 10L, 2L, 10L)),
+                transporter(2, Map.of(1L, 10L, 2L, 99L)));
+
+        Solution solution = solver.solve(data, 2).orElseThrow();
+
+        assertThat(solution.totalCost()).isEqualTo(20);
+        assertThat(solution.selected()).containsExactly(1L, 2L);
+        assertThat(solution.laneToTransporter()).containsExactly(Map.entry(1L, 2L), Map.entry(2L, 1L));
+    }
+
+    @Test
+    @DisplayName("Equal quotes across many lanes: the matched assignment spreads them over the most transporters")
+    void matchedAssignmentMaximizesUsage() {
+        // Minimum cost is 4 (every lane has a quote of 1). T4 is never cheapest, so at most four can be used.
         Dataset data = TestData.of(4,
                 transporter(1, Map.of(1L, 1L, 2L, 1L, 3L, 1L, 4L, 1L)),
                 transporter(2, Map.of(2L, 1L, 3L, 2L, 4L, 1L)),
@@ -161,12 +220,14 @@ class ExactSubsetSolverTest {
                 transporter(4, Map.of(1L, 3L, 2L, 2L, 3L, 2L, 4L, 2L)),
                 transporter(5, Map.of(1L, 3L, 2L, 1L, 3L, 3L, 4L, 3L)));
 
-        // k=2: {2,3} costs 4 and uses two transporters, beating {1,x} which uses only T1.
-        assertThat(solver.solve(data, 2).orElseThrow().selected()).isEqualTo(List.of(2L, 3L));
-        // k=5: the only candidate is all five; T1 wins every tied lane, so only T1 is used.
+        // k=2: {T1, T2} is the first set that reaches cost 4 with two transporters used.
+        Solution two = solver.solve(data, 2).orElseThrow();
+        assertThat(two.totalCost()).isEqualTo(4);
+        assertThat(two.selected()).isEqualTo(List.of(1L, 2L));
+        // k=5: one candidate set (all five); the matching uses T1, T2, T3 and T5.
         Solution all = solver.solve(data, 5).orElseThrow();
         assertThat(all.totalCost()).isEqualTo(4);
-        assertThat(all.selected()).isEqualTo(List.of(1L));
+        assertThat(all.selected()).isEqualTo(List.of(1L, 2L, 3L, 5L));
     }
 
     @Test
