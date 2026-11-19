@@ -46,7 +46,7 @@ Without a local Maven, the tests also run in the official Maven image:
 docker run --rm -v "$PWD":/app -w /app maven:3.9-eclipse-temurin-17 mvn -B test
 ```
 
-Then open http://localhost:8080/swagger-ui.html. Both endpoints have ready-made examples ("Test Case 1", "Test Case 2")
+Then open http://localhost:8080/swagger-ui.html (the bare http://localhost:8080/ redirects there). Both endpoints have ready-made examples ("Test Case 1", "Test Case 2")
 under **Try it out**.
 
 The only environment variable is `PORT` (default `8080`). The exact-search limit can be changed with
@@ -221,7 +221,7 @@ config/       OpenAPI info, Swagger examples
 
 ## Tests
 
-`mvn test` runs 55 tests:
+`mvn test` runs 56 tests:
 
 - `ExactSubsetSolverTest`: Test Case 1 (k = 1, 2, 3, 7, k > N), the sample's set {3, 4, 6} and its listed
   assignment (69,001), Test Case 2 (k = 2, 3, 4), tie-breaks.

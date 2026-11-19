@@ -136,6 +136,14 @@ class TransporterApiTest {
         }
 
         @Test
+        void rootRedirectsToSwaggerUi() throws Exception {
+            mvc.perform(get("/"))
+                    .andExpect(status().isFound())
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                            .header().string("Location", "/swagger-ui.html"));
+        }
+
+        @Test
         void openApiDocsListTheEndpoints() throws Exception {
             mvc.perform(get("/v3/api-docs"))
                     .andExpect(status().isOk())
