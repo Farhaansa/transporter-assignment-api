@@ -5,9 +5,9 @@ transporters, at the lowest total cost it can prove. The minimum is guaranteed w
 within its configurable budget; otherwise the service returns a clearly labelled heuristic result (see
 [Solver](#solver)).
 
-- **Live API:** `<deployed-url>`
-- **Swagger UI:** `<deployed-url>/swagger-ui.html`
-- **OpenAPI JSON:** `<deployed-url>/v3/api-docs`
+- **Live API:** https://transporter-assignment-api-8bha.onrender.com (the root redirects to Swagger UI; the free instance sleeps when idle, so the first request can take up to a minute)
+- **Swagger UI:** https://transporter-assignment-api-8bha.onrender.com/swagger-ui.html
+- **OpenAPI JSON:** https://transporter-assignment-api-8bha.onrender.com/v3/api-docs
 
 Java 17 · Spring Boot 3.2 · Maven · springdoc-openapi 2.5 · JUnit 5 + MockMvc. In-memory storage, no database.
 
@@ -371,7 +371,7 @@ k ≥ 4: 59,896.
    transporters), and keeps the cheapest set, using branch-and-bound to skip sets that cannot win. The problem is
    NP-hard, so the exact search has a budget; if it runs out, a coverage-first local search answers, the response
    says `HEURISTIC`, and the note reports the gap to a proven lower bound instead of claiming a minimum.
-2. **API demo on the deployed Swagger UI.** Open `<deployed-url>/swagger-ui.html` a minute before recording, so a
+2. **API demo on the deployed Swagger UI.** Open https://transporter-assignment-api-8bha.onrender.com/swagger-ui.html a minute before recording, so a
    sleeping free-tier instance has woken up (waking also clears the in-memory data).
    - `POST /assignment` with `{"maxTransporters": 3}` first: **409**, no input saved yet.
    - `POST /input` with the "Test Case 1" example, then `POST /assignment` with `{"maxTransporters": 3}`:
