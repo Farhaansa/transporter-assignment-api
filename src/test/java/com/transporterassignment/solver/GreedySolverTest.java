@@ -55,6 +55,37 @@ class GreedySolverTest {
         assertThat(solution.selected()).containsExactly(1L, 2L, 3L, 4L);
     }
 
+    @Test
+    @DisplayName("Balance: an equal-cost extra transporter is added and used, at unchanged cost")
+    void balanceAddsEqualCostTransporter() {
+        // Cover picks T1 (covers both lanes for 20). Improve adds nothing (no one lowers the cost).
+        // T2 quotes lane 2 at the same 10, so balance adds it and the matching gives it lane 2.
+        Dataset data = TestData.of(2,
+                transporter(1, Map.of(1L, 10L, 2L, 10L)),
+                transporter(2, Map.of(2L, 10L)),
+                transporter(3, Map.of(1L, 50L)),
+                transporter(4, Map.of(1L, 50L)));
+
+        Solution solution = solver.solve(data, 2).orElseThrow();
+
+        assertThat(solution.totalCost()).isEqualTo(20);
+        assertThat(solution.selected()).containsExactly(1L, 2L);
+        assertThat(solution.laneToTransporter()).containsExactly(Map.entry(1L, 1L), Map.entry(2L, 2L));
+    }
+
+    @Test
+    @DisplayName("Balance never trades cost for usage")
+    void balanceKeepsCost() {
+        Dataset data = TestData.of(2,
+                transporter(1, Map.of(1L, 10L, 2L, 10L)),
+                transporter(2, Map.of(1L, 11L, 2L, 11L)));
+
+        Solution solution = solver.solve(data, 2).orElseThrow();
+
+        assertThat(solution.totalCost()).isEqualTo(20);
+        assertThat(solution.selected()).containsExactly(1L);
+    }
+
     private static Map<Long, Long> quotes(Dataset data, long transporterId) {
         return data.transporters().stream().filter(t -> t.id() == transporterId).findFirst().orElseThrow().quotes();
     }

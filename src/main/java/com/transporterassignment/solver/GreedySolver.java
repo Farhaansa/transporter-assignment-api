@@ -7,15 +7,19 @@ import org.springframework.stereotype.Component;
 import java.util.Optional;
 
 /**
- * Fallback heuristic for inputs too large to search exhaustively. Not guaranteed optimal.
+ * Fallback heuristic for inputs too large to search exhaustively. The result may cost more than the minimum, and
+ * an empty result does not prove that no covering selection exists.
  *
  * <ol>
  *   <li>Cover: repeatedly add the transporter with the lowest average quote over the lanes it can still cover,
  *       until every lane is covered. Fails if a lane cannot be covered or more than {@code k} are needed.</li>
  *   <li>Improve: while fewer than {@code k} are chosen, add the transporter that lowers the total cost most;
  *       stop when no transporter lowers it.</li>
+ *   <li>Balance: while fewer than {@code k} are chosen, add the first transporter (lowest id) that keeps the
+ *       total cost unchanged and raises the matched usage; stop when none does.</li>
  * </ol>
- * Ties go to the lowest transporter id. Time is O(k * N * lanes * k).
+ * Ties go to the lowest transporter id. Cover and improve take O(k * N * lanes * k); each balance round adds one
+ * cost evaluation and one matching per candidate.
  */
 @Component
 public class GreedySolver implements AssignmentSolver {
@@ -34,7 +38,8 @@ public class GreedySolver implements AssignmentSolver {
         if (chosenCount < 0) {
             return Optional.empty();
         }
-        improve(matrix, chosen, chosenCount, limit);
+        chosenCount = improve(matrix, chosen, chosenCount, limit);
+        balance(matrix, chosen, chosenCount, limit);
         return Assigner.assign(matrix, indexesOf(chosen), METHOD);
     }
 
@@ -87,8 +92,8 @@ public class GreedySolver implements AssignmentSolver {
         return chosenCount;
     }
 
-    /** Phase 2: spend the remaining budget on transporters that lower the cost. */
-    private static void improve(QuoteMatrix matrix, boolean[] chosen, int chosenCount, int limit) {
+    /** Phase 2: spend the remaining budget on transporters that lower the cost. Returns the new chosen count. */
+    private static int improve(QuoteMatrix matrix, boolean[] chosen, int chosenCount, int limit) {
         long current = cost(matrix, chosen);
         while (chosenCount < limit) {
             int bestT = -1;
@@ -106,11 +111,45 @@ public class GreedySolver implements AssignmentSolver {
                 }
             }
             if (bestT < 0) {
-                return;
+                break;
             }
             chosen[bestT] = true;
             chosenCount++;
             current = bestCost;
+        }
+        return chosenCount;
+    }
+
+    /**
+     * Phase 3: spend any remaining budget on transporters that cost nothing extra but take a lane of their own,
+     * so equal quotes are spread over more transporters.
+     */
+    private static void balance(QuoteMatrix matrix, boolean[] chosen, int chosenCount, int limit) {
+        long current = cost(matrix, chosen);
+        int usage = Assigner.maximumUsage(matrix, indexesOf(chosen));
+        int usageCap = Math.min(limit, matrix.laneCount());
+        while (chosenCount < limit && usage < usageCap) {
+            int added = -1;
+            for (int t = 0; t < matrix.transporterCount() && added < 0; t++) {
+                if (chosen[t]) {
+                    continue;
+                }
+                chosen[t] = true;
+                if (cost(matrix, chosen) == current) {
+                    int candidateUsage = Assigner.maximumUsage(matrix, indexesOf(chosen));
+                    if (candidateUsage > usage) {
+                        usage = candidateUsage;
+                        added = t;
+                    }
+                }
+                if (added < 0) {
+                    chosen[t] = false;
+                }
+            }
+            if (added < 0) {
+                return;
+            }
+            chosenCount++;
         }
     }
 

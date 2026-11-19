@@ -199,6 +199,9 @@ so it cannot overflow).
 1. **Cover:** repeatedly add the transporter with the lowest average quote over the lanes it can still cover,
    until every lane is covered. Fail if a lane cannot be covered or more than k transporters are needed.
 2. **Improve:** while fewer than k are chosen, add the transporter that lowers the total cost most.
+3. **Balance:** while fewer than k are chosen, add the first transporter (lowest id) that leaves the total cost
+   unchanged and raises the matched usage; stop when none does. The final assignment uses the same matched
+   `Assigner` as the exact solver.
 
 The greedy result is **not guaranteed optimal** (and it may miss a feasible selection that exists), so the response
 says `"solver": "GREEDY"` and adds a `note`. A seeded randomized test checks that the exact cost is never higher than
@@ -237,7 +240,7 @@ config/       OpenAPI info, Swagger examples
 
 ## Tests
 
-`mvn test` runs 61 tests:
+`mvn test` runs 64 tests:
 
 - `ExactSubsetSolverTest`: Test Case 1 (k = 1, 2, 3, 7, k > N), the sample's set {3, 4, 6} and its listed
   assignment (69,001), Test Case 2 (k = 2, 3, 4), tie-breaks, and the matched assignment (equal quotes use both

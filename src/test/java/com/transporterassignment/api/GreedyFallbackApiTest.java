@@ -2,6 +2,7 @@ package com.transporterassignment.api;
 
 import com.transporterassignment.repository.DatasetRepository;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -9,6 +10,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
+import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -42,6 +44,29 @@ class GreedyFallbackApiTest {
                 .andExpect(jsonPath("$.note").value(containsString("35")))
                 .andExpect(jsonPath("$.note").value(containsString("may not be optimal")))
                 .andExpect(jsonPath("$.assignments.length()").value(5));
+    }
+
+    @Test
+    @DisplayName("GREEDY with an equal-cost extra transporter: it is used and the cost is unchanged")
+    void greedyBalanceUsesEqualCostTransporter() throws Exception {
+        // N=4, k=2: C(4, 2) = 6 > 5, so the greedy fallback runs.
+        String input = """
+                {"lanes": [{"id": 1, "origin": "A", "destination": "B"}, {"id": 2, "origin": "C", "destination": "D"}],
+                 "transporters": [
+                   {"id": 1, "name": "T1", "laneQuotes": [{"laneId": 1, "quote": 10}, {"laneId": 2, "quote": 10}]},
+                   {"id": 2, "name": "T2", "laneQuotes": [{"laneId": 2, "quote": 10}]},
+                   {"id": 3, "name": "T3", "laneQuotes": [{"laneId": 1, "quote": 50}]},
+                   {"id": 4, "name": "T4", "laneQuotes": [{"laneId": 1, "quote": 50}]}]}
+                """;
+        mvc.perform(post("/api/v1/transporters/input").contentType(MediaType.APPLICATION_JSON).content(input))
+                .andExpect(status().isOk());
+
+        mvc.perform(post("/api/v1/transporters/assignment").contentType(MediaType.APPLICATION_JSON)
+                        .content(Samples.maxTransporters(2)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.solver").value("GREEDY"))
+                .andExpect(jsonPath("$.totalCost").value(20))
+                .andExpect(jsonPath("$.selectedTransporters").value(contains(1, 2)));
     }
 
     @Test
