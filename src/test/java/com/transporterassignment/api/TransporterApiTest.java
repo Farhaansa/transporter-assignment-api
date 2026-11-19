@@ -148,7 +148,13 @@ class TransporterApiTest {
             mvc.perform(get("/v3/api-docs"))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.paths['/api/v1/transporters/input']").exists())
-                    .andExpect(jsonPath("$.paths['/api/v1/transporters/assignment']").exists());
+                    .andExpect(jsonPath("$.paths['/api/v1/transporters/assignment']").exists())
+                    .andExpect(jsonPath("$.paths['/api/v1/transporters/assignment'].post.description")
+                            .value(containsString("our documented interpretation of the brief")))
+                    .andExpect(jsonPath("$.components.schemas.AssignmentResponse.properties.solver.description")
+                            .value(containsString("proven minimum")))
+                    .andExpect(jsonPath("$.components.schemas.AssignmentResponse.properties.solver.description")
+                            .value(containsString("may be higher than the minimum")));
         }
     }
 
@@ -297,7 +303,9 @@ class TransporterApiTest {
 
             ResultActions result = postJson(ASSIGNMENT, Samples.maxTransporters(2));
             assertErrorShape(result, 422, "Unprocessable Entity");
-            result.andExpect(jsonPath("$.message").value(containsString("maxTransporters")));
+            result.andExpect(jsonPath("$.message").value(containsString("maxTransporters")))
+                    .andExpect(jsonPath("$.message").value(containsString("can cover")))
+                    .andExpect(jsonPath("$.message").value(not(containsString("may still exist"))));
         }
 
         @Test

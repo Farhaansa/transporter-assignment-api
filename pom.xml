@@ -15,7 +15,7 @@
     <artifactId>transporter-assignment</artifactId>
     <version>1.0.0</version>
     <name>transporter-assignment-api</name>
-    <description>Assigns shipping lanes to transporters at minimum total cost using at most k transporters.</description>
+    <description>Assigns shipping lanes to at most k transporters, minimizing total cost: exact within a configurable search limit, a labelled heuristic beyond it.</description>
 
     <properties>
         <java.version>17</java.version>

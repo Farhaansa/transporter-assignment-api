@@ -1,7 +1,8 @@
 # Transporter Assignment API
 
-A Spring Boot REST service that assigns every shipping lane to one transporter so that the total cost is minimal,
-using at most `maxTransporters` transporters.
+A Spring Boot REST service that assigns every shipping lane to one transporter, using at most `maxTransporters`
+transporters, at the lowest total cost it can prove. The minimum is guaranteed up to a configurable search size;
+beyond it the service returns a clearly labelled heuristic result (see [Solver](#solver)).
 
 - **Live API:** `<deployed-url>`
 - **Swagger UI:** `<deployed-url>/swagger-ui.html`
@@ -110,8 +111,9 @@ Response `200` for Test Case 1:
 - `assignments` has one entry per lane, ordered by `laneId`.
 - `selectedTransporters` lists the transporters that received at least one lane, ordered by id.
 - `solver` and `note` are small additions to the specified response, so the result is honest about how it was
-  produced. `solver` is `EXACT` (proven minimum) or `GREEDY` (heuristic, see [Solver](#solver)). `note` appears
-  only when there is something to say, for example when `maxTransporters` was clamped or the greedy fallback ran.
+  produced. `solver` is `EXACT` (proven minimum cost) or `GREEDY` (heuristic: the cost may be higher than the
+  minimum; see [Solver](#solver)). `note` appears only when there is something to say, for example when
+  `maxTransporters` was clamped or the greedy fallback ran.
 
 ## Errors
 
@@ -164,6 +166,24 @@ pile onto one transporter while another could take a lane at the same price.
 
 The solver is a **Strategy** (`AssignmentSolver`) with two implementations; `SolverSelector` picks one per request.
 
+### What is guaranteed, and what is not
+
+Choosing at most k transporters to minimize the sum of each lane's cheapest quote is a k-median-style selection
+problem and is **NP-hard**. No known algorithm solves every large input exactly in reasonable time, and no fast
+heuristic is guaranteed to find a covering selection even when one exists. The service therefore makes a
+deliberate, documented tradeoff:
+
+| Search size C(N, k) | Solver | What the result means |
+|---|---|---|
+| ≤ `solver.max-combinations` (default 200,000) | `EXACT` | The proven minimum cost, with usage maximized among minimum-cost answers. A 422 proves no selection of at most k transporters covers every lane. |
+| > `solver.max-combinations` | `GREEDY` | A heuristic answer. Its cost **may be higher than the minimum**, and a 422 from it means only that the heuristic found no cover; **one may still exist**. Every such response says `"solver": "GREEDY"` and carries a `note`. |
+
+**The minimum-cost guarantee holds only within `solver.max-combinations`.** Above that limit, the brief's
+cost-minimization objective is **not** met in general: the service returns a labelled best effort, which is an
+open tradeoff, not a solved requirement. Raising the limit extends the exact range at the price of response time
+(roughly linear in C(N, k)). An exact method that scales further (for example an integer-programming solver) would
+be the next step if large inputs matter; it would still have no guaranteed fast running time.
+
 ### Exact: `ExactSubsetSolver`
 
 1. Sort transporters by id and clamp k to N.
@@ -203,9 +223,11 @@ so it cannot overflow).
    unchanged and raises the matched usage; stop when none does. The final assignment uses the same matched
    `Assigner` as the exact solver.
 
-The greedy result is **not guaranteed optimal** (and it may miss a feasible selection that exists), so the response
-says `"solver": "GREEDY"` and adds a `note`. A seeded randomized test checks that the exact cost is never higher than
-the greedy cost, and that the exact cost matches a brute-force search over every subset.
+The greedy result **may cost more than the minimum**, and greedy **may fail to find a cover that exists** (it
+then answers 422 with "one may still exist", never claiming the input is infeasible). For example, Test Case 2 plus
+one more transporter and k = 3 has a cover costing 7,500, but greedy needs four transporters and gives up; a test
+pins this. The response always says `"solver": "GREEDY"` with a `note`. A seeded randomized test checks that the
+exact cost is never higher than the greedy cost on small inputs, where both can run.
 
 ## Design notes
 
@@ -240,7 +262,7 @@ config/       OpenAPI info, Swagger examples
 
 ## Tests
 
-`mvn test` runs 64 tests:
+`mvn test` runs 65 tests:
 
 - `ExactSubsetSolverTest`: Test Case 1 (k = 1, 2, 3, 7, k > N), the sample's set {3, 4, 6} and its listed
   assignment (69,001), Test Case 2 (k = 2, 3, 4), tie-breaks, and the matched assignment (equal quotes use both
@@ -251,7 +273,9 @@ config/       OpenAPI info, Swagger examples
 - `CombinatoricsTest`: C(7,3) = 35, C(5,5) = 1, the largest exact value, saturation.
 - `TransporterApiTest`: every row of the error table, both test cases over HTTP, clamping, replacement of input,
   OpenAPI docs. The tests post the files in `samples/`, so the published samples are tested too.
-- `GreedyFallbackApiTest`: with `solver.max-combinations=5` the response says `GREEDY` with a note.
+- `GreedyFallbackApiTest`: with `solver.max-combinations=5` the response says `GREEDY` with a note giving the
+  combination count and "may not be optimal"; the balance step uses an equal-cost transporter; and when greedy
+  misses a cover that exists, the 422 says "one may still exist" instead of claiming infeasibility.
 - `UnexpectedErrorApiTest`: an unexpected exception becomes a generic 500.
 
 ## Deployment
@@ -294,8 +318,9 @@ k ≥ 4: 59,896.
 2 to 5 minutes, screen and face visible throughout.
 
 1. **Approach (30 s).** Lanes and quotes are stored in memory. For k transporters, the service tries every set of
-   k transporters, gives each lane to the cheapest quote in the set, and keeps the cheapest set. Above 200,000
-   combinations it falls back to a greedy heuristic and says so in the response.
+   k transporters, gives each lane to the cheapest quote in the set (spreading equal quotes to use more
+   transporters), and keeps the cheapest set. The problem is NP-hard, so above 200,000 combinations it falls back
+   to a greedy heuristic, says so in the response, and does not claim the result is the minimum.
 2. **API demo on the deployed Swagger UI.** Open `<deployed-url>/swagger-ui.html` a minute before recording, so a
    sleeping free-tier instance has woken up (waking also clears the in-memory data).
    - `POST /assignment` with `{"maxTransporters": 3}` first: **409**, no input saved yet.
@@ -304,10 +329,11 @@ k ≥ 4: 59,896.
 3. **Errors.** `POST /input` with "Test Case 2", then `/assignment` with `{"maxTransporters": 2}`: **422**, no two
    transporters cover all five lanes. Optionally `{"maxTransporters": 0}` for a 400.
 4. **Two technical decisions.**
-   - Exact enumeration with an explicit, deterministic tie-break, because the inputs are small and an exact answer
-     is checkable.
-   - An honest `solver` field and a greedy fallback with a configurable limit, so a large input still gets an answer
-     and the caller knows whether it is proven optimal.
+   - Exact enumeration with an explicit priority (cost, then usage via a maximum matching, then ids), because the
+     inputs are small and an exact answer is checkable.
+   - An honest `solver` field and a greedy fallback with a configurable limit. Large inputs get a best-effort answer
+     instead of an unbounded wait, and the caller can see that it is not proven optimal. This is a stated
+     tradeoff: above the limit, minimum cost is not guaranteed.
 5. **One challenge.** The sample output in the specification is inconsistent (75000 listed, while its own
    assignments add up to 69,001 and use a transporter outside the selected set). The tests were therefore written
    against a brute-force-verified optimum (60,139), and a randomized test compares the solver with brute force.

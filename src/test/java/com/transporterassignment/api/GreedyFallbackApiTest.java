@@ -12,6 +12,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -43,6 +44,7 @@ class GreedyFallbackApiTest {
                 .andExpect(jsonPath("$.solver").value("GREEDY"))
                 .andExpect(jsonPath("$.note").value(containsString("35")))
                 .andExpect(jsonPath("$.note").value(containsString("may not be optimal")))
+                .andExpect(jsonPath("$.note").value(containsString("may be higher than the minimum")))
                 .andExpect(jsonPath("$.assignments.length()").value(5));
     }
 
@@ -67,6 +69,24 @@ class GreedyFallbackApiTest {
                 .andExpect(jsonPath("$.solver").value("GREEDY"))
                 .andExpect(jsonPath("$.totalCost").value(20))
                 .andExpect(jsonPath("$.selectedTransporters").value(contains(1, 2)));
+    }
+
+    @Test
+    @DisplayName("GREEDY 422 says a cover may still exist, never that none exists")
+    void greedyInfeasibilityIsNotClaimedAsProof() throws Exception {
+        // Test Case 2 plus T5, k=3: C(5, 3) = 10 > 5, so greedy runs. A cover exists ({X, Y, Z} = 7500),
+        // but greedy picks Z, X, then W and needs a fourth transporter, so it gives up.
+        String input = Samples.case2().replaceFirst("]\\s*}\\s*$",
+                ", {\"id\": 5, \"name\": \"V\", \"laneQuotes\": [{\"laneId\": 5, \"quote\": 5000}]}]}");
+        mvc.perform(post("/api/v1/transporters/input").contentType(MediaType.APPLICATION_JSON).content(input))
+                .andExpect(status().isOk());
+
+        mvc.perform(post("/api/v1/transporters/assignment").contentType(MediaType.APPLICATION_JSON)
+                        .content(Samples.maxTransporters(3)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.message").value(containsString("greedy heuristic")))
+                .andExpect(jsonPath("$.message").value(containsString("one may still exist")))
+                .andExpect(jsonPath("$.message").value(not(containsString("can cover"))));
     }
 
     @Test

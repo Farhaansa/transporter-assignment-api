@@ -5,7 +5,8 @@ import org.springframework.stereotype.Component;
 
 /**
  * Picks the solver strategy for a problem size: exact search while C(N, k) is within
- * {@code solver.max-combinations}, otherwise the greedy heuristic.
+ * {@code solver.max-combinations}, otherwise the greedy heuristic. The problem is NP-hard, so the minimum-cost
+ * guarantee holds only within the limit; above it the result is a labelled heuristic answer.
  */
 @Component
 public class SolverSelector {

@@ -46,7 +46,8 @@ public class AssignmentService {
         if (!choice.exhaustive()) {
             notes.add(String.format(Locale.ROOT,
                     "The search space of C(%d, %d) = %s combinations exceeds the limit of %,d, so a greedy heuristic "
-                            + "was used. The result may not be optimal.",
+                            + "was used instead of the exact search. The result may not be optimal: the total cost "
+                            + "may be higher than the minimum.",
                     n, k, describe(choice.searchSpace()), choice.maxCombinations()));
         }
 

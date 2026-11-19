@@ -14,8 +14,9 @@ public class OpenApiConfig {
                 .title("Transporter Assignment API")
                 .version("1.0.0")
                 .description("""
-                        Assigns every shipping lane to one transporter so the total cost is minimal, \
-                        using at most maxTransporters transporters. \
+                        Assigns every shipping lane to one transporter, using at most maxTransporters \
+                        transporters and minimizing the total cost. The cost is the proven minimum when the \
+                        response says "solver": "EXACT"; "GREEDY" results are heuristic and may cost more. \
                         Call POST /input first (try the "Test Case 1" example), then POST /assignment. \
                         Data is kept in memory and is lost when the service restarts."""));
     }

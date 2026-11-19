@@ -23,7 +23,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping(path = "/api/v1/transporters", produces = MediaType.APPLICATION_JSON_VALUE)
-@Tag(name = "Transporter assignment", description = "Save lanes and quotes, then assign every lane at minimum cost")
+@Tag(name = "Transporter assignment",
+        description = "Save lanes and quotes, then assign every lane to one transporter at the lowest cost found")
 public class TransporterController {
 
     private final InputService inputService;
@@ -51,15 +52,23 @@ public class TransporterController {
     }
 
     @PostMapping(path = "/assignment", consumes = MediaType.APPLICATION_JSON_VALUE)
-    @Operation(summary = "Assign every lane at minimum total cost using at most maxTransporters transporters",
-            description = "The 'solver' field says whether the result is a proven minimum (EXACT) "
-                    + "or a heuristic (GREEDY) used because the search space exceeded the configured limit.")
+    @Operation(summary = "Assign every lane using at most maxTransporters transporters, minimizing total cost",
+            description = """
+                    Priority (our documented interpretation of the brief): lowest total cost first; among \
+                    minimum-cost answers, as many transporters as possible up to maxTransporters; remaining ties \
+                    by lower transporter ids.
+
+                    The 'solver' field says how the result was produced. EXACT: exhaustive search, the total cost \
+                    is the proven minimum. GREEDY: used only when C(N, k) exceeds solver.max-combinations, because \
+                    the problem is NP-hard; it is a heuristic, its cost may be higher than the minimum, and a note \
+                    says so.""")
     @ApiResponse(responseCode = "200", description = "Assignment found")
     @ApiResponse(responseCode = "400", description = "maxTransporters missing or not positive",
             content = @Content(schema = @Schema(implementation = ApiError.class)))
     @ApiResponse(responseCode = "409", description = "No input saved yet",
             content = @Content(schema = @Schema(implementation = ApiError.class)))
-    @ApiResponse(responseCode = "422", description = "No selection of at most maxTransporters covers every lane",
+    @ApiResponse(responseCode = "422", description = "EXACT: no selection of at most maxTransporters covers every "
+            + "lane. GREEDY: the heuristic found no cover, but one may still exist.",
             content = @Content(schema = @Schema(implementation = ApiError.class)))
     public AssignmentResponse assign(
             @io.swagger.v3.oas.annotations.parameters.RequestBody(content = @Content(examples = {
