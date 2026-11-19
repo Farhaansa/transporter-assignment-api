@@ -11,8 +11,8 @@ public record AssignmentResponse(
         long totalCost,
         @Schema(description = "One entry per lane, ordered by lane id") List<LaneAssignmentDto> assignments,
         @Schema(description = "Transporters that received at least one lane, ordered by id") List<Long> selectedTransporters,
-        @Schema(description = "EXACT: exhaustive search, the total cost is the proven minimum. "
-                + "GREEDY: heuristic used when the search space exceeds solver.max-combinations; "
+        @Schema(description = "EXACT: the exact search completed, the total cost is the proven minimum. "
+                + "HEURISTIC: the exact search ran out of budget and local search answered; "
                 + "the total cost may be higher than the minimum.", example = "EXACT")
         String solver,
         @Schema(description = "Optional remarks, for example clamping of maxTransporters") String note) {

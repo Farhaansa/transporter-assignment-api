@@ -58,17 +58,19 @@ public class TransporterController {
                     minimum-cost answers, as many transporters as possible up to maxTransporters; remaining ties \
                     by lower transporter ids.
 
-                    The 'solver' field says how the result was produced. EXACT: exhaustive search, the total cost \
-                    is the proven minimum. GREEDY: used only when C(N, k) exceeds solver.max-combinations, because \
-                    the problem is NP-hard; it is a heuristic, its cost may be higher than the minimum, and a note \
-                    says so.""")
+                    The 'solver' field says how the result was produced. EXACT: the branch-and-bound search \
+                    completed within its budget (solver.max-search-nodes, solver.max-time-ms), so the total cost \
+                    is the proven minimum. HEURISTIC: the problem is NP-hard and the exact search ran out of \
+                    budget, so a coverage-first local search answered within solver.heuristic-time-ms. Its cost \
+                    may be higher than the minimum; the note says so and reports the gap to a proven lower bound.""")
     @ApiResponse(responseCode = "200", description = "Assignment found")
     @ApiResponse(responseCode = "400", description = "maxTransporters missing or not positive",
             content = @Content(schema = @Schema(implementation = ApiError.class)))
     @ApiResponse(responseCode = "409", description = "No input saved yet",
             content = @Content(schema = @Schema(implementation = ApiError.class)))
-    @ApiResponse(responseCode = "422", description = "EXACT: no selection of at most maxTransporters covers every "
-            + "lane. GREEDY: the heuristic found no cover, but one may still exist.",
+    @ApiResponse(responseCode = "422", description = "Proven infeasible (the exact search completed): no selection "
+            + "of at most maxTransporters covers every lane. Or search inconclusive (budgets ran out): no cover was "
+            + "found, but one may still exist; that message starts with 'Search inconclusive'.",
             content = @Content(schema = @Schema(implementation = ApiError.class)))
     public AssignmentResponse assign(
             @io.swagger.v3.oas.annotations.parameters.RequestBody(content = @Content(examples = {

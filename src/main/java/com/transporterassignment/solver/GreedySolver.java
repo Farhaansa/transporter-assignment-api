@@ -7,8 +7,9 @@ import org.springframework.stereotype.Component;
 import java.util.Optional;
 
 /**
- * Fallback heuristic for inputs too large to search exhaustively. The result may cost more than the minimum, and
- * an empty result does not prove that no covering selection exists.
+ * Greedy heuristic. Its answers are never returned to clients directly: it supplies the exact search's first upper
+ * bound and one of the local search's starting sets. The result may cost more than the minimum, and an empty result
+ * does not prove that no covering selection exists (its cover phase is greedy set cover, which can strand lanes).
  *
  * <ol>
  *   <li>Cover: repeatedly add the transporter with the lowest average quote over the lanes it can still cover,
@@ -28,19 +29,28 @@ public class GreedySolver implements AssignmentSolver {
 
     @Override
     public Optional<Solution> solve(Dataset data, int k) {
-        QuoteMatrix.requirePositive(k);
         QuoteMatrix matrix = QuoteMatrix.of(data);
+        int[] chosen = chosenSet(matrix, k);
+        return chosen == null ? Optional.empty() : Assigner.assign(matrix, chosen, METHOD);
+    }
+
+    /**
+     * Runs cover, improve and balance, and returns the chosen transporter indexes (ascending, at most
+     * {@code min(k, N)}), or null when the cover phase fails. Used as a starting point by the other solvers.
+     */
+    static int[] chosenSet(QuoteMatrix matrix, int k) {
+        QuoteMatrix.requirePositive(k);
         int n = matrix.transporterCount();
         int limit = Math.min(k, n);
         boolean[] chosen = new boolean[n];
 
         int chosenCount = cover(matrix, chosen, limit);
         if (chosenCount < 0) {
-            return Optional.empty();
+            return null;
         }
         chosenCount = improve(matrix, chosen, chosenCount, limit);
         balance(matrix, chosen, chosenCount, limit);
-        return Assigner.assign(matrix, indexesOf(chosen), METHOD);
+        return indexesOf(chosen);
     }
 
     @Override
@@ -124,7 +134,7 @@ public class GreedySolver implements AssignmentSolver {
      * Phase 3: spend any remaining budget on transporters that cost nothing extra but take a lane of their own,
      * so equal quotes are spread over more transporters.
      */
-    private static void balance(QuoteMatrix matrix, boolean[] chosen, int chosenCount, int limit) {
+    static void balance(QuoteMatrix matrix, boolean[] chosen, int chosenCount, int limit) {
         long current = cost(matrix, chosen);
         int usage = Assigner.maximumUsage(matrix, indexesOf(chosen));
         int usageCap = Math.min(limit, matrix.laneCount());
@@ -163,7 +173,7 @@ public class GreedySolver implements AssignmentSolver {
         return total;
     }
 
-    private static int[] indexesOf(boolean[] chosen) {
+    static int[] indexesOf(boolean[] chosen) {
         int count = 0;
         for (boolean c : chosen) {
             if (c) {

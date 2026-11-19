@@ -86,6 +86,25 @@ class TransporterApiTest {
         }
 
         @Test
+        @DisplayName("Test Case 1 over HTTP for k = 1, 2, 7: 96940, 62938, 59896 with [1, 3, 4, 5], all EXACT")
+        void case1OtherK() throws Exception {
+            postJson(INPUT, Samples.case1()).andExpect(status().isOk());
+
+            postJson(ASSIGNMENT, Samples.maxTransporters(1))
+                    .andExpect(jsonPath("$.totalCost").value(96940))
+                    .andExpect(jsonPath("$.solver").value("EXACT"));
+            postJson(ASSIGNMENT, Samples.maxTransporters(2))
+                    .andExpect(jsonPath("$.totalCost").value(62938))
+                    .andExpect(jsonPath("$.solver").value("EXACT"));
+            postJson(ASSIGNMENT, Samples.maxTransporters(7))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.totalCost").value(59896))
+                    .andExpect(jsonPath("$.selectedTransporters").value(org.hamcrest.Matchers.contains(1, 3, 4, 5)))
+                    .andExpect(jsonPath("$.solver").value("EXACT"))
+                    .andExpect(jsonPath("$.note").doesNotExist());
+        }
+
+        @Test
         @DisplayName("Test Case 2 over HTTP: k=3 costs 7500, k=4 costs 7450")
         void case2() throws Exception {
             postJson(INPUT, Samples.case2()).andExpect(status().isOk());

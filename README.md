@@ -1,8 +1,9 @@
 # Transporter Assignment API
 
 A Spring Boot REST service that assigns every shipping lane to one transporter, using at most `maxTransporters`
-transporters, at the lowest total cost it can prove. The minimum is guaranteed up to a configurable search size;
-beyond it the service returns a clearly labelled heuristic result (see [Solver](#solver)).
+transporters, at the lowest total cost it can prove. The minimum is guaranteed whenever the exact search completes
+within its configurable budget; otherwise the service returns a clearly labelled heuristic result (see
+[Solver](#solver)).
 
 - **Live API:** `<deployed-url>`
 - **Swagger UI:** `<deployed-url>/swagger-ui.html`
@@ -50,8 +51,16 @@ docker run --rm -v "$PWD":/app -w /app maven:3.9-eclipse-temurin-17 mvn -B test
 Then open http://localhost:8080/swagger-ui.html (the bare http://localhost:8080/ redirects there). Both endpoints have ready-made examples ("Test Case 1", "Test Case 2")
 under **Try it out**.
 
-The only environment variable is `PORT` (default `8080`). The exact-search limit can be changed with
-`solver.max-combinations` (default `200000`), for example `--solver.max-combinations=1000000`.
+The only environment variable is `PORT` (default `8080`). Solver budgets can be changed as Spring properties, for
+example `--solver.max-search-nodes=20000000`:
+
+| Property | Default | Meaning |
+|---|---|---|
+| `solver.max-search-nodes` | `5000000` | Most branch-and-bound nodes the exact search may evaluate |
+| `solver.max-time-ms` | `10000` | Most time the exact search may take |
+| `solver.heuristic-time-ms` | `3000` | Time budget for the local search, used only after the exact search stops at a budget |
+
+`solver.max-combinations` from earlier versions is gone: branch-and-bound is limited by work done, not by C(N, k).
 
 ## API
 
@@ -111,9 +120,10 @@ Response `200` for Test Case 1:
 - `assignments` has one entry per lane, ordered by `laneId`.
 - `selectedTransporters` lists the transporters that received at least one lane, ordered by id.
 - `solver` and `note` are small additions to the specified response, so the result is honest about how it was
-  produced. `solver` is `EXACT` (proven minimum cost) or `GREEDY` (heuristic: the cost may be higher than the
-  minimum; see [Solver](#solver)). `note` appears only when there is something to say, for example when
-  `maxTransporters` was clamped or the greedy fallback ran.
+  produced. `solver` is `EXACT` (the exact search completed: proven minimum cost) or `HEURISTIC` (the exact search
+  ran out of budget and local search answered: the cost may be higher than the minimum; see [Solver](#solver)).
+  `note` appears only when there is something to say, for example when `maxTransporters` was clamped or the
+  heuristic answered (it then reports the gap to a proven lower bound).
 
 ## Errors
 
@@ -138,7 +148,8 @@ Every error has the same body:
 | Duplicate lane id; duplicate transporter id; quote for a lane id not in `lanes`; the same lane quoted twice by one transporter | 400 |
 | `maxTransporters` missing, 0 or negative | 400 |
 | A lane that no transporter quoted (checked at `/input`; the message lists the lane ids) | 422 |
-| No selection of at most `maxTransporters` transporters covers every lane (the message suggests raising `maxTransporters`) | 422 |
+| No selection of at most `maxTransporters` transporters covers every lane, **proven** by a completed exact search (the message suggests raising `maxTransporters`) | 422 |
+| **Search inconclusive:** the exact search ran out of budget and local search found no cover; one may still exist (the message starts with "Search inconclusive" and names the budgets to raise; never reported as infeasible) | 422 |
 | `/assignment` called before any `/input` | 409 |
 | `maxTransporters` greater than the number of transporters | 200, clamped to N, with a `note` |
 | Unknown path / wrong method / wrong content type | 404 / 405 / 415 |
@@ -164,36 +175,57 @@ pile onto one transporter while another could take a lane at the same price.
 
 ## Solver
 
-The solver is a **Strategy** (`AssignmentSolver`) with two implementations; `SolverSelector` picks one per request.
+The solver strategies (`AssignmentSolver`) run as a pipeline (`SolverPipeline`): the exact branch-and-bound search
+first, within its budget; only if a budget runs out, the coverage-first local search.
 
 ### What is guaranteed, and what is not
 
 Choosing at most k transporters to minimize the sum of each lane's cheapest quote is a k-median-style selection
 problem and is **NP-hard**. No known algorithm solves every large input exactly in reasonable time, and no fast
-heuristic is guaranteed to find a covering selection even when one exists. The service therefore makes a
-deliberate, documented tradeoff:
+heuristic is guaranteed to find a covering selection even when one exists. Branch-and-bound extends the exact
+reach well beyond plain enumeration on typical inputs, but it is still bounded by `solver.max-search-nodes` and
+`solver.max-time-ms`. The service therefore makes a deliberate, documented tradeoff:
 
-| Search size C(N, k) | Solver | What the result means |
+| Outcome | `solver` | What the result means |
 |---|---|---|
-| ≤ `solver.max-combinations` (default 200,000) | `EXACT` | The proven minimum cost, with usage maximized among minimum-cost answers. A 422 proves no selection of at most k transporters covers every lane. |
-| > `solver.max-combinations` | `GREEDY` | A heuristic answer. Its cost **may be higher than the minimum**, and a 422 from it means only that the heuristic found no cover; **one may still exist**. Every such response says `"solver": "GREEDY"` and carries a `note`. |
+| Exact search completed within budget | `EXACT` | The proven minimum cost, with usage maximized among minimum-cost answers. A 422 from a completed search proves no selection of at most k transporters covers every lane. |
+| Exact search ran out of budget | `HEURISTIC` | The best answer local search found within `solver.heuristic-time-ms`. Its cost **may be higher than the minimum**. The `note` says so and reports the gap to a proven lower bound. A 422 here ("Search inconclusive") means only that no cover was found; **one may still exist**. |
 
-**The minimum-cost guarantee holds only within `solver.max-combinations`.** Above that limit, the brief's
+**The minimum-cost guarantee holds only when the exact search completes.** When it runs out of budget, the brief's
 cost-minimization objective is **not** met in general: the service returns a labelled best effort, which is an
-open tradeoff, not a solved requirement. Raising the limit extends the exact range at the price of response time
-(roughly linear in C(N, k)). An exact method that scales further (for example an integer-programming solver) would
-be the next step if large inputs matter; it would still have no guaranteed fast running time.
+open tradeoff, not a solved requirement. Raising the budgets extends the exact range at the price of response time.
 
-### Exact: `ExactSubsetSolver`
+**The lower-bound gap in the note.** LB is the sum of each lane's globally cheapest quote, ignoring k. No selection
+can cost less, so LB is a proven lower bound on the optimum, and `cost - LB` is an **upper bound** on how far the
+answer is from the optimum, not the actual distance. The note says, for example, "Total cost 12345 is within 4.4% of
+the theoretical lower bound 11834" (rounded up), or "matches the theoretical lower bound" when they are equal.
+A small gap is evidence about the answer; it is not a claim that the answer is close to optimal.
 
-1. Sort transporters by id and clamp k to N.
-2. Enumerate every set of exactly `min(k, N)` transporters in lexicographic order (iterative combination
-   generation, no recursion or streams in the hot loop).
-3. For each set, cost = sum over lanes of the cheapest quote in the set; skip sets that leave a lane uncovered.
-4. Keep the best by lowest cost, then higher **matched usage**, then the first set found.
-5. Build the assignment for the best set with the shared `Assigner` (below).
+**Determinism.** Every step uses a fixed order and a fixed random seed, so equal inputs give equal outputs, unless
+a time budget (`solver.max-time-ms` or `solver.heuristic-time-ms`) runs out, which depends on machine load.
 
-**Matched assignment (`Assigner`, shared by both solvers).** For the chosen set, each lane's "cheapest edges" are
+### Exact: `ExactSubsetSolver` (branch-and-bound)
+
+Contract: among all sets of exactly `min(k, N)` transporters, the minimum cost; among those, the highest matched
+usage; among those, the lexicographically first set by transporter id. "Infeasible" is returned only when the
+search completes and no such set covers every lane.
+
+1. **Upper bound first.** The greedy solver's set, filled to `min(k, N)`, gives an initial cost to beat. It is only
+   a bound: the answer is always a set the search itself reaches, which keeps the tie rules exact.
+2. **Branch** on transporters in ascending id order, include-first. This visits complete sets in lexicographic
+   order, the same order as plain enumeration. Each node keeps the per-lane minimum quote of the included
+   transporters, updated incrementally.
+3. **Bound** (O(lanes) per node): the cost of the included transporters together with every not-yet-decided one,
+   using precomputed per-lane suffix minima. Prune when some lane can no longer be covered, when the bound exceeds
+   the best cost, or when it equals the best cost and the best set already uses `min(k, lanes)` transporters (sets
+   found later are lexicographically larger, so they can win neither on usage nor on ids).
+4. **Complete sets:** a lower cost replaces the best; an equal cost replaces it only with strictly higher matched
+   usage, computed lazily.
+5. **Budget:** nodes are counted and the clock is checked every 4,096 nodes. When `solver.max-search-nodes` or
+   `solver.max-time-ms` runs out, the search stops, is never reported as `EXACT`, and hands its best feasible set to
+   the local search. A budget stop is never turned into a 422 while a feasible set is known.
+
+**Matched assignment (`Assigner`, shared by every solver).** For the chosen set, each lane's "cheapest edges" are
 the transporters offering its cheapest in-set quote. A maximum bipartite matching between lanes and their cheapest
 edges (Kuhn's augmenting paths; lanes in ascending id, candidates in ascending transporter id, so the result is
 deterministic) gives matched lanes to their matched transporter. Unmatched lanes go to their cheapest transporter
@@ -203,31 +235,38 @@ transporter must be cheapest for at least one lane of its own.
 
 **Why sets of exactly `min(k, N)` are enough.** For cost: adding a transporter never raises it, because each lane
 keeps its cheapest quote. For usage: any minimum-cost assignment that uses a set U still fits, at the same cost,
-inside every larger set that contains U, so that set's matched usage is at least |U|. A randomized test compares
-both cost and usage with a brute force over every possible assignment.
+inside every larger set that contains U, so that set's matched usage is at least |U|.
 
-**Complexity.** The cost scan is **O(C(N, k) × lanes × k)** time and O(N × lanes) memory; for 7 transporters and
-k = 3 that is 35 sets. The matching (O(lanes² × k)) runs only for a set whose cost ties the best so far, and not at
-all once the best set already uses `min(k, lanes)` transporters. Inputs with many exactly equal quotes therefore
-cost more than the scan alone; inputs without ties cost nothing extra.
+**Complexity.** The worst case is still exponential, O(C(N, k) × lanes) nodes, which is why the budgets exist. In
+practice the bound prunes whole subtrees once a good set is known, so structured inputs far beyond the old
+200,000-set enumeration cap complete exactly; a test solves a C(40, 5) = 658,008-set instance exactly while
+evaluating under a tenth of that many nodes. The matching (O(lanes² × k)) runs only for complete sets whose cost
+ties the best.
 
-### Greedy fallback: `GreedySolver`
+### Heuristic fallback: `LocalSearchSolver` (coverage-first local search)
 
-Used only when C(N, k) exceeds `solver.max-combinations` (default **200,000**; C(N, k) is computed with saturation,
-so it cannot overflow).
+Runs only when the exact search stops at a budget. Objective, compared lexicographically: **first the number of
+uncovered lanes, then total cost.** Treating coverage as primary lets it repair sets that strand lanes, which
+greedy set cover cannot do; on sparse quote data (each transporter quotes only some lanes, normal in freight) the
+old greedy cover often found no cover at all even though one existed.
 
-1. **Cover:** repeatedly add the transporter with the lowest average quote over the lanes it can still cover,
-   until every lane is covered. Fail if a lane cannot be covered or more than k transporters are needed.
-2. **Improve:** while fewer than k are chosen, add the transporter that lowers the total cost most.
-3. **Balance:** while fewer than k are chosen, add the first transporter (lowest id) that leaves the total cost
-   unchanged and raises the matched usage; stop when none does. The final assignment uses the same matched
-   `Assigner` as the exact solver.
+1. **Starting sets**, in a fixed order: the exact search's best feasible set, the greedy solver's set, the union of
+   each lane's globally cheapest transporter, and a few pseudo-random sets from a fixed seed. Each is resized to
+   exactly `min(k, N)` by adding (or, for the union, removing) the transporter that best improves the objective.
+2. **Moves:** swap one chosen transporter for one unchosen one, scanning in ascending id order and applying the
+   first improving swap, until no swap improves the objective.
+3. **Best across starts.** Every starting set is scored first, so the answer is never worse than the best starting
+   set, and in particular never costs more than the exact search's incumbent.
+4. **Balance:** for a covering result, transporters that receive no lane are dropped (cost unchanged) and the
+   greedy solver's equal-cost balance step adds transporters that take a lane at no extra cost.
+5. **Time budget:** `solver.heuristic-time-ms`, checked between improvement passes, so the set in hand is always
+   complete and valid.
 
-The greedy result **may cost more than the minimum**, and greedy **may fail to find a cover that exists** (it
-then answers 422 with "one may still exist", never claiming the input is infeasible). For example, Test Case 2 plus
-one more transporter and k = 3 has a cover costing 7,500, but greedy needs four transporters and gives up; a test
-pins this. The response always says `"solver": "GREEDY"` with a `note`. A seeded randomized test checks that the
-exact cost is never higher than the greedy cost on small inputs, where both can run.
+### Helper: `GreedySolver`
+
+Cover (lowest average quote over still-uncovered lanes), improve (add the transporter that lowers the cost most)
+and balance (add equal-cost transporters that raise usage). Its answers are never returned directly: it supplies
+the exact search's first bound and one local-search starting set.
 
 ## Design notes
 
@@ -236,13 +275,14 @@ controller/   TransporterController       HTTP only: validation trigger, delegat
 service/      InputService                validate -> map -> save
               InputValidator              cross-field rules (duplicates, unknown lanes, unquoted lanes)
               DatasetMapper               DTO -> immutable domain model
-              AssignmentService           runs the chosen solver, builds notes and the response
+              AssignmentService           runs the pipeline, builds notes, maps outcomes to responses/errors
 solver/       AssignmentSolver            Strategy interface
-              ExactSubsetSolver           exhaustive search
-              GreedySolver                fallback heuristic
-              SolverSelector              picks the strategy from the search-space size (simple factory)
+              ExactSubsetSolver           branch-and-bound exact search (ExactSearch result, SearchBudget limits)
+              LocalSearchSolver           coverage-first local search, the budget fallback
+              GreedySolver                greedy helper: first bound and a starting set
+              SolverPipeline              runs exact, then local search if a budget ran out; reports the outcome
               Assigner                    one place for the final rule: cheapest quote, matched for usage
-              QuoteMatrix, Combinatorics  dense quote table; saturating C(n, k)
+              QuoteMatrix, Combinatorics  dense quote table, lower bound; saturating C(n, k)
 repository/   DatasetRepository           Repository interface
               InMemoryDatasetRepository   AtomicReference holding the latest immutable Dataset
 dto/          request/response records with Bean Validation and @Schema examples
@@ -251,31 +291,40 @@ exception/    ApiException hierarchy + GlobalExceptionHandler (@RestControllerAd
 config/       OpenAPI info, Swagger examples
 ```
 
-- **Patterns used where they help:** Strategy (solvers), a small factory/selector (`SolverSelector`), Repository
-  (`DatasetRepository`), DTOs separate from the domain model.
+- **Patterns used where they help:** Strategy (solvers), a pipeline that chains them (`SolverPipeline`),
+  Repository (`DatasetRepository`), DTOs separate from the domain model.
 - **Thread safety:** `Dataset` is immutable and stored in an `AtomicReference`, so a concurrent `/assignment` sees
   either the old input or the new one, never a mix. Solvers keep no state.
 - **Validation in two layers:** Bean Validation on the DTO records for field rules; `InputValidator` for rules that
   span fields. Input is validated completely before it replaces the stored data.
 - **No business logic in the controller**, and no stack traces in responses.
-- **Determinism:** transporters and lanes are sorted by id once, so equal inputs always give equal outputs.
+- **Determinism:** transporters and lanes are sorted by id once and every search uses a fixed order and seed, so
+  equal inputs give equal outputs unless a time budget runs out.
 
 ## Tests
 
-`mvn test` runs 65 tests:
+`mvn test` runs 84 tests:
 
 - `ExactSubsetSolverTest`: Test Case 1 (k = 1, 2, 3, 7, k > N), the sample's set {3, 4, 6} and its listed
   assignment (69,001), Test Case 2 (k = 2, 3, 4), tie-breaks, and the matched assignment (equal quotes use both
   transporters, cost still beats usage, usage is bounded by the lane count, matching beats a naive per-lane rule).
-- `GreedySolverTest`: covers every lane, respects k, returns empty when infeasible.
-- `SolverPropertyTest`: seeded random datasets; exact cost = brute-force minimum, exact ≤ greedy, and exact usage =
-  the brute-force maximum usage among minimum-cost assignments (brute force over every possible assignment).
-- `CombinatoricsTest`: C(7,3) = 35, C(5,5) = 1, the largest exact value, saturation.
-- `TransporterApiTest`: every row of the error table, both test cases over HTTP, clamping, replacement of input,
-  OpenAPI docs. The tests post the files in `samples/`, so the published samples are tested too.
-- `GreedyFallbackApiTest`: with `solver.max-combinations=5` the response says `GREEDY` with a note giving the
-  combination count and "may not be optimal"; the balance step uses an equal-cost transporter; and when greedy
-  misses a cover that exists, the 422 says "one may still exist" instead of claiming infeasibility.
+- `BranchAndBoundOracleTest`: on 900 seeded random instances (dense, tie-heavy and sparse, including unquoted lanes
+  and infeasible k) the branch-and-bound search returns exactly what the old plain enumeration returns, kept in the
+  test tree as `EnumerationOracle`: same cost, usage, transporter ids and lane mapping. Also: an instance beyond the
+  old cap solved exactly with far fewer nodes, and budget stops that keep the incumbent.
+- `SolverPropertyTest`: exact cost = brute-force minimum, exact ≤ greedy, and exact usage = the brute-force maximum
+  usage among minimum-cost assignments.
+- `LocalSearchSolverTest`: never worse than the best starting set; a prior seed is never lost; deterministic;
+  seeded sparse instances with a planted cover where the greedy cover phase fails and local search finds a cover;
+  no cover gives no solution; balance still spreads equal quotes.
+- `SolverPipelineTest`: exact, proven-infeasible and inconclusive outcomes; with exhausted budgets the heuristic
+  answer never costs more than the exact search's incumbent.
+- `GreedySolverTest`, `CombinatoricsTest`, `LowerBoundGapTest` (percent rounded up, equal bound, zero bound).
+- `TransporterApiTest`: every row of the error table, both test cases over HTTP (Test Case 1 for k = 1, 2, 3, 7
+  and k > N), clamping, replacement of input, OpenAPI docs. The tests post the files in `samples/`.
+- `HeuristicFallbackApiTest` (exact budget of 2 nodes): `HEURISTIC` with the budget note and lower-bound gap and a
+  cost no higher than the incumbent; a cover the greedy phase misses is found; the inconclusive 422 is distinct
+  from the proven-infeasible one; byte-identical responses for the same input.
 - `UnexpectedErrorApiTest`: an unexpected exception becomes a generic 500.
 
 ## Deployment
@@ -319,8 +368,9 @@ k ≥ 4: 59,896.
 
 1. **Approach (30 s).** Lanes and quotes are stored in memory. For k transporters, the service tries every set of
    k transporters, gives each lane to the cheapest quote in the set (spreading equal quotes to use more
-   transporters), and keeps the cheapest set. The problem is NP-hard, so above 200,000 combinations it falls back
-   to a greedy heuristic, says so in the response, and does not claim the result is the minimum.
+   transporters), and keeps the cheapest set, using branch-and-bound to skip sets that cannot win. The problem is
+   NP-hard, so the exact search has a budget; if it runs out, a coverage-first local search answers, the response
+   says `HEURISTIC`, and the note reports the gap to a proven lower bound instead of claiming a minimum.
 2. **API demo on the deployed Swagger UI.** Open `<deployed-url>/swagger-ui.html` a minute before recording, so a
    sleeping free-tier instance has woken up (waking also clears the in-memory data).
    - `POST /assignment` with `{"maxTransporters": 3}` first: **409**, no input saved yet.
@@ -329,11 +379,12 @@ k ≥ 4: 59,896.
 3. **Errors.** `POST /input` with "Test Case 2", then `/assignment` with `{"maxTransporters": 2}`: **422**, no two
    transporters cover all five lanes. Optionally `{"maxTransporters": 0}` for a 400.
 4. **Two technical decisions.**
-   - Exact enumeration with an explicit priority (cost, then usage via a maximum matching, then ids), because the
-     inputs are small and an exact answer is checkable.
-   - An honest `solver` field and a greedy fallback with a configurable limit. Large inputs get a best-effort answer
-     instead of an unbounded wait, and the caller can see that it is not proven optimal. This is a stated
-     tradeoff: above the limit, minimum cost is not guaranteed.
+   - Branch-and-bound with an explicit priority (cost, then usage via a maximum matching, then ids), checked
+     against the old enumeration on hundreds of random cases, because an exact answer is checkable.
+   - An honest `solver` field, a budgeted exact search and a coverage-first fallback. Large inputs get a
+     best-effort answer instead of an unbounded wait, labelled `HEURISTIC` with a lower-bound gap, and "no cover
+     found" is never reported as "infeasible". This is a stated tradeoff: minimum cost is guaranteed only when the
+     exact search completes.
 5. **One challenge.** The sample output in the specification is inconsistent (75000 listed, while its own
    assignments add up to 69,001 and use a transporter outside the selected set). The tests were therefore written
    against a brute-force-verified optimum (60,139), and a randomized test compares the solver with brute force.
